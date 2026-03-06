@@ -1,0 +1,592 @@
+---
+title: Question 1
+jupyter: econ470-a0kernel
+---
+
+```{python}
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import statsmodels.api as sm
+from sklearn.neighbors import NearestNeighbors
+from sklearn.linear_model import LogisticRegression
+```
+
+```{python}
+data = pd.read_csv("../data/output/final_star.csv")
+```
+
+```{python}
+print(list(data.columns))
+```
+
+
+
+```{python}
+# Question 1: 
+
+d1 = data.copy()
+
+# choose and clean variables
+d1["star_rating"] = pd.to_numeric(d1["partcd_score"], errors="coerce")  # overall star rating proxy
+d1["enrollment"] = pd.to_numeric(d1["avg_enrollment"], errors="coerce")
+d1["market_share"] = np.where(
+    pd.to_numeric(d1["avg_enrolled"], errors="coerce") > 0,
+    d1["enrollment"] / pd.to_numeric(d1["avg_enrolled"], errors="coerce"),
+    np.nan
+)
+
+# create table
+summary = (
+    d1.loc[d1["year"].between(2010, 2015)]
+      .groupby("year")
+      .agg(
+          mean_star_rating=("star_rating", "mean"),
+          mean_enrollments=("enrollment", "mean"),
+          mean_market_share=("market_share", "mean"),
+          n_plans=("planid", "count"),
+      )
+      .reset_index()
+      .sort_values("year")
+)
+
+summary
+```
+
+### Question 2
+
+```{python}
+
+no_star_summary = (
+    data.loc[data["year"].between(2010, 2015)]
+        .assign(
+            star_rating=lambda d: pd.to_numeric(d["partcd_score"], errors="coerce"),
+            enrollment=lambda d: pd.to_numeric(d["avg_enrollment"], errors="coerce"),
+            market_share=lambda d: np.where(
+                pd.to_numeric(d["avg_enrolled"], errors="coerce") > 0,
+                pd.to_numeric(d["avg_enrollment"], errors="coerce") / pd.to_numeric(d["avg_enrolled"], errors="coerce"),
+                np.nan
+            ),
+        )
+        .loc[lambda d: d["star_rating"].isna()]  # plans without a star rating
+        .groupby("year")
+        .agg(
+            mean_enrollments=("enrollment", "mean"),
+            mean_market_share=("market_share", "mean"),
+            n_plans_no_star=("planid", "count"),
+        )
+        .reset_index()
+        .sort_values("year")
+)
+
+no_star_summary
+```
+
+### Question 3
+
+```{python}
+# question 3
+
+# Clean star ratings (numeric)
+df = data.copy()
+df["star_rating"] = pd.to_numeric(df["partcd_score"], errors="coerce")
+
+# Only rated plans and target years
+years = [2010, 2012, 2015]
+df = df[df["year"].isin(years) & df["star_rating"].notna()]
+
+
+for y in years:
+    sub = df[df["year"] == y]
+
+    counts = (
+        sub["star_rating"]
+        .value_counts()
+        .sort_index()
+    )
+
+    plt.figure()
+    plt.bar(counts.index.astype(str), counts.values)
+    plt.title(f"Distribution of Star Ratings ({y})")
+    plt.xlabel("Star Rating")
+    plt.ylabel("Number of Plans")
+    plt.show()
+```
+
+#### The distribution of Medicare Advantage star ratings shifts noticeably upward between 2010, 2012, and 2015. In 2010, the majority of plans are concentrated around 2.5 to 3 stars, with relatively few plans receiving ratings above 4 stars. This suggests that plan quality, as measured by the star rating system, was generally lower during the early years of the program. By 2012, the distribution begins to move slightly to the right. While 3-star plans remain the most common, there is a visible increase in the number of 3.5- and 4-star plans, indicating some improvement in overall plan quality. By 2015, the distribution shifts substantially toward higher ratings. A large share of plans now receive 4 or 4.5 stars, and the number of low-rated plans (below 3 stars) declines sharply. This suggests that over time plans improved their performance, likely in response to quality incentives and bonus payments tied to higher star ratings. Overall, the graphs indicate a systematic improvement in plan ratings over time, with the distribution moving from lower ratings in 2010 toward higher ratings by 2015.
+
+### Question 4
+
+```{python}
+df = data.copy()
+
+# Dependent variable: market share (plan enrollment / total enrolled in county)
+df["market_share"] = np.where(
+    pd.to_numeric(df["avg_enrolled"], errors="coerce") > 0,
+    pd.to_numeric(df["avg_enrollment"], errors="coerce") / pd.to_numeric(df["avg_enrolled"], errors="coerce"),
+    np.nan
+)
+
+# Star rating 
+df["star"] = pd.to_numeric(df["partcd_score"], errors="coerce")
+
+# Star bucket indicators (excluded category: star <= 2.5)
+df["star_3"]  = ((df["star"] > 2.5) & (df["star"] < 3.5)).astype(int)   # approx 3.0
+df["star_35"] = ((df["star"] >= 3.5) & (df["star"] < 4.0)).astype(int)  # 3.5
+df["star_4"]  = ((df["star"] >= 4.0) & (df["star"] < 4.5)).astype(int)  # 4.0
+df["star_45p"] = (df["star"] >= 4.5).astype(int)                        # 4.5+
+
+years = range(2010, 2016)
+rows = ["Intercept", "Star = 3.0", "Star = 3.5", "Star = 4.0", "Star >= 4.5", "N"]
+
+coef_table = pd.DataFrame(index=rows, columns=[str(y) for y in years], dtype=object)
+
+for y in years:
+    sub = df[(df["year"] == y) & df["market_share"].notna()].copy()
+
+    X = sub[["star_3", "star_35", "star_4", "star_45p"]]
+    X = sm.add_constant(X)
+    yvec = sub["market_share"]
+
+    model = sm.OLS(yvec, X, missing="drop").fit()
+
+    # Fill table with coef 
+    coef_table.loc["Intercept", str(y)] = f"{model.params.get('const', np.nan):.4f} ({model.bse.get('const', np.nan):.4f})"
+    coef_table.loc["Star = 3.0", str(y)] = f"{model.params.get('star_3', np.nan):.4f} ({model.bse.get('star_3', np.nan):.4f})"
+    coef_table.loc["Star = 3.5", str(y)] = f"{model.params.get('star_35', np.nan):.4f} ({model.bse.get('star_35', np.nan):.4f})"
+    coef_table.loc["Star = 4.0", str(y)] = f"{model.params.get('star_4', np.nan):.4f} ({model.bse.get('star_4', np.nan):.4f})"
+    coef_table.loc["Star >= 4.5", str(y)] = f"{model.params.get('star_45p', np.nan):.4f} ({model.bse.get('star_45p', np.nan):.4f})"
+    coef_table.loc["N", str(y)] = int(model.nobs)
+
+coef_table
+```
+
+### Question 5
+
+```{python}
+d5 = data.loc[data["year"] == 2010].copy()
+
+# Published star rating
+d5["star"] = pd.to_numeric(d5["partcd_score"], errors="coerce")
+
+# Running variable: average of individual metrics
+metric_cols = [f"metric_{i:02d}" for i in range(1, 33)]
+
+missing_metrics = [c for c in metric_cols if c not in d5.columns]
+if len(missing_metrics) > 0:
+    raise KeyError(f"Missing metric columns needed for running variable: {missing_metrics}")
+
+for c in metric_cols:
+    d5[c] = pd.to_numeric(d5[c], errors="coerce")
+
+d5["running"] = d5[metric_cols].mean(axis=1, skipna=True)
+
+# Enforce minimum non-missing metrics for a reliable mean
+d5.loc[d5[metric_cols].notna().sum(axis=1) < 20, "running"] = np.nan
+
+bins = [2.75, 3.25, 3.75, 4.25, 4.75, 5.25]
+labels = ["3.0", "3.5", "4.0", "4.5", "5.0"]
+
+d5["rounded_up_to"] = pd.cut(d5["running"], bins=bins, right=False, labels=labels)
+
+# Numeric version of the bin label (helper for alignment check)
+d5["rounded_up_to_num"] = pd.to_numeric(d5["rounded_up_to"].astype(str), errors="coerce")
+
+# Keep only rows where published star and running-implied bucket agree
+d5_aligned = d5.loc[
+    d5["rounded_up_to"].notna() &
+    d5["star"].notna() &
+    d5["rounded_up_to_num"].notna() &
+    (d5["star"] == d5["rounded_up_to_num"])
+].copy()
+
+# Count plans (rows) by rounded-up category USING ONLY aligned rows
+rounded_counts = (
+    d5_aligned
+      .groupby("rounded_up_to")
+      .size()
+      .reindex(labels, fill_value=0)
+      .reset_index(name="n_plans")
+      .rename(columns={"rounded_up_to": "rounded_up_star"})
+)
+
+rounded_counts
+```
+
+### Question 6
+
+```{python}
+d6 = data.loc[data["year"] == 2010].copy()
+
+d6["avg_enrollment"] = pd.to_numeric(d6["avg_enrollment"], errors="coerce")
+d6["avg_enrolled"] = pd.to_numeric(d6["avg_enrolled"], errors="coerce")
+
+d6["market_share"] = np.where(
+    d6["avg_enrolled"] > 0,
+    d6["avg_enrollment"] / d6["avg_enrolled"],
+    np.nan
+)
+
+outcome_col = "market_share"
+
+
+metric_cols = [f"metric_{i:02d}" for i in range(1, 33)]
+missing_metrics = [c for c in metric_cols if c not in d6.columns]
+if missing_metrics:
+    raise KeyError(f"Missing metric columns needed for running variable: {missing_metrics}")
+
+for c in metric_cols:
+    d6[c] = pd.to_numeric(d6[c], errors="coerce")
+
+d6["running"] = d6[metric_cols].mean(axis=1, skipna=True)
+
+
+min_metrics = 20
+d6.loc[d6[metric_cols].notna().sum(axis=1) < min_metrics, "running"] = np.nan
+
+
+def rd_local_linear_fit(df, outcome, running, cutoff, h):
+    """
+    Local linear RD within [cutoff-h, cutoff+h]:
+      y = a + tau*Rounded + b*Score + c*(Rounded*Score) + e
+    where Score = running - cutoff and Rounded = 1[running >= cutoff].
+    tau is the RD treatment effect (jump at the cutoff).
+    """
+    d = df[[outcome, running]].dropna().copy()
+    d = d.loc[(d[running] >= cutoff - h) & (d[running] <= cutoff + h)].copy()
+    if d.empty:
+        return None
+
+    d["Rounded"] = (d[running] >= cutoff).astype(int)
+    d["Score"] = d[running] - cutoff
+    d["Rounded_x_Score"] = d["Rounded"] * d["Score"]
+
+    X = sm.add_constant(d[["Rounded", "Score", "Rounded_x_Score"]])
+    y = d[outcome]
+
+    m = sm.OLS(y, X).fit(cov_type="HC1")
+    return m
+
+
+
+h = 0.125
+m_30 = rd_local_linear_fit(d6, outcome_col, "running", cutoff=2.75, h=h)
+m_35 = rd_local_linear_fit(d6, outcome_col, "running", cutoff=3.25, h=h)
+
+if (m_30 is None) or (m_35 is None):
+    raise ValueError(
+        "No observations in one of the RD windows with h=0.125. "
+        "This usually means your running variable isn't on the expected scale near 2.75/3.25 "
+        "or min_metrics is filtering too aggressively."
+    )
+
+
+row_keys = [
+    ("(Intercept)", "const"),
+    ("Rounded", "Rounded"),
+    ("Running Score", "Score"),
+    ("Rounded x Score", "Rounded_x_Score"),
+]
+
+index = []
+for name, _ in row_keys:
+    index += [name, ""]  # second line for SE
+
+table = pd.DataFrame(index=index + ["Num.Obs.", "R2"], columns=["3 Stars", "3.5 Stars"])
+
+def fill_col(m, col, digits=3):
+    r = 0
+    for name, key in row_keys:
+        table.iloc[r, table.columns.get_loc(col)] = f"{m.params[key]:.{digits}f}"
+        table.iloc[r+1, table.columns.get_loc(col)] = f"({m.bse[key]:.{digits}f})"
+        r += 2
+    table.loc["Num.Obs.", col] = int(m.nobs)
+    table.loc["R2", col] = f"{m.rsquared:.3f}"
+
+fill_col(m_30, "3 Stars", digits=3)
+fill_col(m_35, "3.5 Stars", digits=3)
+
+table
+```
+
+### Question 7
+
+```{python}
+d7 = data.loc[data["year"] == 2010].copy()
+d7["star"] = pd.to_numeric(d7["partcd_score"], errors="coerce")
+
+
+d7["avg_enrollment"] = pd.to_numeric(d7["avg_enrollment"], errors="coerce")
+d7["avg_enrolled"] = pd.to_numeric(d7["avg_enrolled"], errors="coerce")
+
+d7["market_share"] = np.where(
+    d7["avg_enrolled"] > 0,
+    d7["avg_enrollment"] / d7["avg_enrolled"],
+    np.nan
+)
+
+outcome_col = "market_share"
+metric_cols = [f"metric_{i:02d}" for i in range(1, 33)]
+missing_metrics = [c for c in metric_cols if c not in d7.columns]
+if missing_metrics:
+    raise KeyError(f"Missing metric columns needed for running variable: {missing_metrics}")
+
+for c in metric_cols:
+    d7[c] = pd.to_numeric(d7[c], errors="coerce")
+
+d7["running"] = d7[metric_cols].mean(axis=1, skipna=True)
+
+min_metrics = 20
+d7.loc[d7[metric_cols].notna().sum(axis=1) < min_metrics, "running"] = np.nan
+
+
+def rd_local_linear(df, outcome, running="running", cutoff=2.75, h=0.125, min_n=20):
+    d = df[[outcome, running]].dropna().copy()
+    d = d.loc[(d[running] >= cutoff - h) & (d[running] <= cutoff + h)].copy()
+
+    if d.empty:
+        return {
+            "cutoff": cutoff, "bandwidth": h, "n": 0,
+            "tau_hat": np.nan, "se_HC1": np.nan, "p_value": np.nan,
+            "note": "No observations in window."
+        }
+
+    note = ""
+    if d.shape[0] < min_n:
+        note = f"Small n (n={d.shape[0]})."
+
+    d["treat"] = (d[running] >= cutoff).astype(int)
+    d["x"] = d[running] - cutoff
+    d["treat_x"] = d["treat"] * d["x"]
+
+    X = sm.add_constant(d[["treat", "x", "treat_x"]])
+    y = d[outcome]
+
+    m = sm.OLS(y, X).fit(cov_type="HC1")
+
+    return {
+        "cutoff": cutoff,
+        "bandwidth": h,
+        "n": int(m.nobs),
+        "tau_hat": float(m.params["treat"]),
+        "se_HC1": float(m.bse["treat"]),
+        "p_value": float(m.pvalues["treat"]),
+        "note": note
+    }
+
+
+# Set the bandwiths 
+bandwidths = [0.10, 0.12, 0.13, 0.14, 0.15]
+
+cutoffs = [
+    (2.75, "3.0 vs 2.5 (cutoff 2.75)"),
+    (3.25, "3.5 vs 3.0 (cutoff 3.25)")
+]
+
+rows = []
+for h in bandwidths:
+    for c, label in cutoffs:
+        res = rd_local_linear(d7, outcome=outcome_col, cutoff=c, h=h)
+        rows.append({"comparison": label, **res})
+
+results7 = pd.DataFrame(rows)
+results7["ci95_low"] = results7["tau_hat"] - 1.96 * results7["se_HC1"]
+results7["ci95_high"] = results7["tau_hat"] + 1.96 * results7["se_HC1"]
+
+results7_table = results7[[
+    "comparison", "cutoff", "bandwidth", "n",
+    "tau_hat", "se_HC1", "ci95_low", "ci95_high", "p_value", "note"
+]].sort_values(["comparison", "bandwidth"])
+
+results7_table
+
+# with the CL
+plot_df = results7.dropna(subset=["tau_hat", "se_HC1", "bandwidth"]).copy()
+plot_df = plot_df.loc[plot_df["se_HC1"] > 0].copy()
+
+fig, ax = plt.subplots(figsize=(8, 5))
+
+for comp in plot_df["comparison"].unique():
+    tmp = plot_df.loc[plot_df["comparison"] == comp].sort_values("bandwidth")
+    if tmp.empty:
+        continue
+
+    ax.errorbar(
+        tmp["bandwidth"].to_numpy(),
+        tmp["tau_hat"].to_numpy(),
+        yerr=(1.96 * tmp["se_HC1"]).to_numpy(),
+        marker="o",
+        linestyle="-",
+        capsize=3,
+        label=comp
+    )
+
+ax.axhline(0, linewidth=1)
+ax.set_xlabel("Bandwidth (h)")
+ax.set_ylabel("RD estimate (tau_hat) on market_share")
+ax.set_title("RD sensitivity to bandwidth (local linear, HC1 SEs)")
+ax.legend()
+plt.tight_layout()
+plt.show()
+```
+
+#### The RD estimates appear fairly stable across the range of bandwidths from 0.10 to 0.15, suggesting that the results are not highly sensitive to the choice of bandwidth. At the 3-star cutoff (2.75), the estimated effect on market share is positive across all bandwidths. The estimates increase slightly as the bandwidth expands from 0.10 to around 0.13 and then remain relatively stable. The magnitude of the estimate stays within a narrow range, and the confidence intervals overlap across bandwidth choices. This indicates that the estimated increase in market share for plans just above the 3-star threshold is robust to reasonable bandwidth selections. At the 3.5-star cutoff (3.25), the estimated effect is consistently negative across all bandwidths, with values roughly between −0.04 and −0.06. Although there is some small variation as the bandwidth changes, the estimates remain close in magnitude and the confidence intervals again overlap substantially. This suggests that the estimated effect at the 3.5-star threshold is also stable and not driven by a specific bandwidth choice. Overall, the findings show minimal sensitivity to bandwidth selection, as the sign and approximate magnitude of the RD estimates remain consistent across all bandwidths tested. This stability strengthens the credibility of the results and suggests that the estimated discontinuities are not artifacts of a particular bandwidth specification.
+
+### Question 8
+
+```{python}
+import matplotlib.pyplot as plt
+
+# Running variable
+df["raw_score"] = pd.to_numeric(df["partc_score"], errors="coerce")
+
+df = df.dropna(subset=["raw_score"])
+
+# Thresholds
+cutoffs = [2.75, 3.25]
+
+for c in cutoffs:
+    
+    plt.figure(figsize=(6,4))
+    
+    plt.hist(df["raw_score"], bins=30, edgecolor="black")
+    
+    plt.axvline(c, color="red", linestyle="--")
+    
+    plt.title(f"Distribution of Running Variable Around Cutoff {c}")
+    plt.xlabel("Running Variable (Raw Score)")
+    plt.ylabel("Number of Contracts")
+    
+    plt.show()
+```
+
+#### The distribution of the running variable around the thresholds of 2.75 and 3.25 appears relatively smooth, with no obvious spike in the number of contracts just above either cutoff. While there are discrete values in the running variable due to the way star ratings are reported, there is no clear evidence that contracts are bunching just above the thresholds. The number of contracts on either side of the cutoff does not show a sharp discontinuity. Overall, the graphs do not suggest that contracts are manipulating the running variable to barely exceed the thresholds. This supports the validity of the regression discontinuity design, as the running variable appears to be continuous around the cutoff points.
+
+### Question 9
+
+```{python}
+d9 = data.loc[data["year"] == 2010].copy()
+
+# Running variable from underlying metrics
+metric_cols = [f"metric_{i:02d}" for i in range(1, 33)]
+missing_metrics = [c for c in metric_cols if c not in d9.columns]
+if missing_metrics:
+    raise KeyError(f"Missing metric columns needed for running variable: {missing_metrics}")
+
+for c in metric_cols:
+    d9[c] = pd.to_numeric(d9[c], errors="coerce")
+
+d9["running"] = d9[metric_cols].mean(axis=1, skipna=True)
+
+min_metrics = 20
+d9.loc[d9[metric_cols].notna().sum(axis=1) < min_metrics, "running"] = np.nan
+
+# Covariates
+d9["hmo"] = d9["plan_type"].astype(str).str.upper().str.contains("HMO", na=False).astype(int)
+
+partd_str = d9["partd"].astype(str).str.strip().str.upper()
+d9["partd_bin"] = np.where(
+    partd_str.isin(["1", "Y", "YES", "TRUE", "T"]),
+    1,
+    np.where(
+        partd_str.isin(["0", "N", "NO", "FALSE", "F"]),
+        0,
+        pd.to_numeric(d9["partd"], errors="coerce")
+    )
+)
+
+def smd_in_window(df, var, running="running", cutoff=2.75, h=0.125):
+    d = df[[running, var]].dropna().copy()
+    d = d.loc[(d[running] >= cutoff - h) & (d[running] <= cutoff + h)].copy()
+    if d.empty:
+        return {"n": 0, "mean_below": np.nan, "mean_above": np.nan, "smd": np.nan}
+
+    d["above"] = (d[running] >= cutoff).astype(int)
+
+    below = d.loc[d["above"] == 0, var].astype(float)
+    above = d.loc[d["above"] == 1, var].astype(float)
+    if below.empty or above.empty:
+        return {"n": int(len(d)), "mean_below": np.nan, "mean_above": np.nan, "smd": np.nan}
+
+    mean_below = float(below.mean())
+    mean_above = float(above.mean())
+
+    sd_below = float(below.std(ddof=1))
+    sd_above = float(above.std(ddof=1))
+    pooled = np.sqrt((sd_below**2 + sd_above**2) / 2)
+
+    smd = (mean_above - mean_below) / pooled if pooled > 0 else np.nan
+    return {"n": int(len(d)), "mean_below": mean_below, "mean_above": mean_above, "smd": float(smd)}
+
+covars = {"hmo": "HMO indicator", "partd_bin": "Part D indicator"}
+
+cutoffs = [
+    (2.75, "Cutoff 2.75 (2.5 vs 3.0)"),
+    (3.25, "Cutoff 3.25 (3.0 vs 3.5)")
+]
+
+h = 0.125
+
+# Build love_df
+rows = []
+for c, c_label in cutoffs:
+    for v, v_label in covars.items():
+        out = smd_in_window(d9, var=v, cutoff=c, h=h)
+        rows.append({
+            "cutoff_label": c_label,
+            "cutoff": c,
+            "bandwidth": h,
+            "covariate": v_label,
+            "n": out["n"],
+            "mean_below": out["mean_below"],
+            "mean_above": out["mean_above"],
+            "smd": out["smd"],
+            "abs_smd": np.abs(out["smd"]) if pd.notna(out["smd"]) else np.nan
+        })
+
+love_df = pd.DataFrame(rows)
+
+# Two tables
+love_275 = love_df.loc[love_df["cutoff"] == 2.75].sort_values("abs_smd", ascending=False).reset_index(drop=True)
+love_325 = love_df.loc[love_df["cutoff"] == 3.25].sort_values("abs_smd", ascending=False).reset_index(drop=True)
+
+print("\nLove table: cutoff 2.75")
+display(love_275)
+
+print("\nLove table: cutoff 3.25")
+display(love_325)
+
+# Two separate love plots
+plot_df = love_df.dropna(subset=["abs_smd"]).copy()
+
+order = (
+    plot_df.groupby("covariate")["abs_smd"]
+    .max()
+    .sort_values(ascending=True)
+    .index
+)
+
+for c, c_label in cutoffs:
+    tmp = plot_df.loc[plot_df["cutoff"] == c].copy()
+    tmp["covariate"] = pd.Categorical(tmp["covariate"], categories=order, ordered=True)
+    tmp = tmp.sort_values("covariate")
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.plot(tmp["abs_smd"].to_numpy(), tmp["covariate"].astype(str).to_numpy(),
+            marker="o", linestyle="")
+
+    ax.axvline(0.10, linewidth=1)
+    ax.axvline(0.125, linewidth=1)
+
+    ax.set_xlabel("Absolute standardized mean difference |SMD|")
+    ax.set_ylabel("")
+    ax.set_title(f"Love plot: {c_label} (h={h})")
+    plt.tight_layout()
+    plt.show()
+```
+
+### Question 10
+
+#### Overall, the results suggest that increasing a Medicare Advantage star rating can affect plan enrollments, particularly around the 3-star threshold. The regression discontinuity estimates show that plans just above the 3-star cutoff (2.75) experience a positive increase in market share, indicating that moving from 2.5 to 3 stars increases enrollments. This likely occurs because reaching 3 stars improves the perceived quality of the plan and may also make the plan eligible for additional bonuses or marketing advantages.In contrast, the estimates around the 3.5-star cutoff (3.25) are negative or smaller in magnitude, suggesting that moving from 3.0 to 3.5 stars does not generate the same increase in enrollments. This implies that beneficiaries may respond more strongly to crossing the 3-star threshold, which appears to be a more meaningful quality signal.The running variable distributions show no clear evidence of manipulation around the thresholds, supporting the validity of the RD design. Additionally, the covariate balance tests (HMO and Part D indicators) show little discontinuity at the cutoff, indicating that plans just above and below the threshold are broadly comparable. Finally, the bandwidth sensitivity analysis shows that the estimates remain relatively stable across different bandwidth choices, reinforcing the robustness of the results. Overall, the findings suggest that crossing key star rating thresholds—especially the 3-star cutoff—can increase plan enrollments, highlighting the importance of quality ratings in influencing beneficiary plan choices.
+
